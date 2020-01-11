@@ -1,0 +1,319 @@
+---
+title: "EE711 Project"
+author: "Amirsaman Hamzeh and Roya Ghorashi"
+date: "December 26, 2017"
+output: html_document
+---
+
+
+We used "R Markdown" which is a report writing platform of R to prepare this report. R markdown enables us to illustrate explanations, codes, comments and outputs at the same time.
+
+We picked the "Porto Seguro's Safe Driver Prediction" competition from Kaggle website for this project. Inaccuracies in car insurance company's claim predictions raise the cost of insurance for good drivers and reduce the price for bad ones.
+
+In this competition, we were challenged to build a model that predicts the probability that a driver will initiate an auto insurance claim in the next year. While Porto Seguro has used machine learning for the past 20 years, they're looking to Kaggle's machine learning community to explore new, more powerful methods. A more accurate prediction will allow them to further tailor their prices, and hopefully make auto insurance coverage more accessible to more drivers.
+
+We used three methods to predict the target drivers including a simple Logistic Regeression, Random Foreset, and Gradient Boosting. From our resluts, we found that the Logistic regression surprisingly outperforms Gradient Boosting and Random Forest failed to give any results even after a long run time. The better performance of Logistic regression than GB was not expected and at this state, we are not sure about reason and we will investigate it in later steps. In the following, we present all the data manipulation and training procedures indetail.
+
+
+```{r ,echo=FALSE,warning=FALSE}
+#Load required packages:
+library(caret)
+library(dplyr)
+library(ggplot2)
+library(tibble)
+library(corrplot)
+library(xgboost)
+library(pROC)
+```
+
+##Data prepration
+Read train and test data:
+```{r}
+training <- read.csv(file="train.csv",header = TRUE)
+testing <- read.csv(file="test.csv",header = TRUE)
+```
+
+Create target column for testing data set to be able to combine train and test files with the purpose of data imputation:
+
+```{r}
+target <- rep(0,times=892816)
+testing <- data.frame(testing$id,target,testing[,2:58])
+names(testing) <- names(training)
+```
+
+Combine training anad testing data sets:
+
+```{r}
+combi <- rbind(training,testing)
+```
+
+We'll find and eliminate highly correlated variables:
+```{r}
+combi[,1:38] %>% cor(use="complete.obs",method="spearman") %>% corrplot(type="lower",tl.col="black",diag=FALSE)
+``` 
+
+It is observed that variables "ps_ind_14" and "ps_ind_12_bin" are highly correlated (r=0.92) and we can drop one of them. We selected "ps_ind_12_bin" to drop:
+
+```{r}
+combi$ps_ind_12_bin <- NULL
+```
+
+The next step is droping varibles with near zero variation. This procedure is 
+done with a function with the same name from caret package:
+```{r}
+nzv <- nearZeroVar(combi,freqCut = 95/5,saveMetrics = TRUE,names = TRUE, foreach = FALSE, allowParallel = TRUE)
+#print(nzv)
+dropList <- list(
+   "ps_ind_05_cat",
+   "ps_ind_10_bin",
+   "ps_ind_11_bin",
+   "ps_ind_13_bin",
+   "ps_ind_14",
+   "ps_reg_03",
+   "ps_car_10_cat"
+ )
+ for (d in dropList){
+   combi[, eval(d)] <- NULL
+ }
+```
+
+The next step in prepeocessing is dealing with missing values. We observed that 11 variables have missing values out of which 8 are categorical variables. We considered missing values as a new category and replaced them all with
+the value of the new category:
+
+```{r,echo=FALSE}
+combi[combi==-1] <- NA
+nalist <- lapply(combi,function(m) sum(is.na(m)))
+nalist>0
+unique(combi[,4])
+combi[is.na(combi[,4]),4] <- 5
+
+unique(combi[,6])
+combi[is.na(combi[,6]),6] <- 2
+
+unique(combi[,17])
+combi[is.na(combi[,17]),17] <- 12
+
+unique(combi[,18])
+combi[is.na(combi[,18]),18] <- 2
+
+unique(combi[,19])
+combi[is.na(combi[,19]),19] <- 2
+
+unique(combi[,21])
+combi[is.na(combi[,21]),21] <- 2
+
+unique(combi[,23])
+combi[is.na(combi[,23]),23] <- 2
+
+unique(combi[,25])
+combi[is.na(combi[,25]),25] <- 5
+```
+
+For numeric variables with NA values, if the variable had less than 5% NA values, we filled NAs with median, otherwise we dropped the variable:
+
+```{r}
+sum(is.na(combi$ps_car_11))
+combi$ps_car_11[is.na(combi$ps_car_11)] <- median(combi$ps_car_11,na.rm = TRUE)
+
+sum(is.na(combi$ps_car_12))
+combi$ps_car_12[is.na(combi$ps_car_12)] <- median(combi$ps_car_12,na.rm = TRUE)
+
+sum(is.na(combi$ps_car_14))
+combi$ps_car_14 <- NULL
+```
+
+The final step is to change the class of categorical variables to factor for Random Forest and GB as they accept factor as the dependent variable:
+
+```{r}
+catlist <- names(combi %>% select(ends_with("_cat")))
+combi[, catlist] <- lapply(combi[, catlist], factor)
+
+train <- filter(combi,combi$id %in% training$id)
+test <- filter(combi,combi$id %in% testing$id)
+```
+
+
+##Logistic Regression
+The first approach that we utilize is Logistic regression using glm function as shown below. Validation of Logestic regression using multiple ROC curve to measure the area under the curve was done and ROC curve is shown below with the area equal to 0.6141:
+
+```{r,warning=FALSE}
+inTrain <- createDataPartition(y=train$target, p=0.75, list=FALSE);
+train1 <- train[inTrain,]
+test1 <- train[-inTrain,]
+
+logfit1 <- glm(target~.-id,data = train1,family = binomial(link = "logit"))
+logfitpreds1 <- predict(logfit1, newdata = test1, type = "response")
+
+roc.multi <- multiclass.roc(test1$target,logfitpreds1)
+auc(roc.multi)
+
+```
+
+
+The training process on the full tarining data was done using Logistic Regression:
+```{r,warning=FALSE}
+logfit <- glm(target~.-id,data = train,family = binomial(link = "logit"))
+logfitpreds <- predict(logfit, newdata = test, type = "response")
+logistic <- data.frame(test$id,logfitpreds)
+write.csv(logistic,"logistic.csv")
+
+data.frame(preds = logfitpreds) %>%
+  ggplot(aes(x = logfitpreds)) + 
+  geom_histogram(bins = 50, fill = 'grey50') +
+  labs(title = 'Histogram of Predictions') +
+  theme_bw()
+range(logfitpreds)
+``` 
+Our score from this solution on Kaggle website was 0.23855 and our rank was 4296/5169 (min=-0.25, max=0.29698)
+
+
+
+##Random Forest
+The second approach that we utilize is Random Forest using train function from caret package as shown below:
+```{r}
+#rffit <- train(target~.,data = train,method="rf",prox=TRUE)
+```
+This procedure took too long such that we got no solution after one day run time of the program.
+
+
+
+##Gradient Boosting
+Next we used Gradiant Boosting method using XGBoost package as shown below:
+
+Validation for Xgboost method(ROC curve) is done by the code block below giving Multi-class area under the curve equal to 0.6054.
+```{r}
+datamatrix2 <- data.matrix(train1[,3:50])
+lable2 <- as.matrix(train1$target)
+testmatrix2 <-data.matrix(test1[,3:50])
+#xgbfitpreds2 <- predict(xgbfit2,testmatrix2)
+
+xgbfit2 <- xgboost(data=datamatrix2,label = lable2 ,max.depth=700,eta=0.1,n_estimators=200, nthread=3, nround =10, objective = "binary:logistic")
+xgbfitpreds2 <- predict(xgbfit2,testmatrix2)
+
+roc.multi <- multiclass.roc(test1$target,xgbfitpreds2)
+auc(roc.multi)
+
+```
+
+Xgboost method:
+```{r}
+datamatrix <- data.matrix(train[,3:50])
+lable <- as.matrix(train$target)
+xgbfit <- xgboost(data=datamatrix,label = lable ,max.depth=700,eta=0.1,n_estimators=200, nthread=3, nround =10, objective = "binary:logistic")
+testmatrix <-data.matrix(test[,3:50])
+xgbfitpreds <- predict(xgbfit,testmatrix)
+gradiantboosting <- data.frame(test$id,xgbfitpreds)
+write.csv(gradiantboosting,"gradiantboosting.csv")
+
+data.frame(preds = xgbfitpreds) %>%
+  ggplot(aes(x = xgbfitpreds)) + 
+  geom_histogram(bins = 50, fill = 'grey50') +
+  labs(title = 'Histogram of Predictions') +
+  theme_bw()
+range(xgbfitpreds)
+```
+Our score from this solution on Kaggle website was 0.09310 and our rank was 4835/5169 (min=-0.25, max=0.29698).
+
+Next we applied parameter tuning on XGBoost package (without any preprocessing). First we show the validation results with area under the curve equal to 0.5954:
+
+```{r,warning=FALSE}
+datamatrix23 <- data.matrix(train1[,3:50])
+lable2_1 <- as.matrix(train1$target)
+dtrain23 <- xgb.DMatrix(data = datamatrix23,label = lable2_1) 
+
+testmatrix23 <-data.matrix(test1[,3:50])
+lable2_2 <- as.matrix(test1$target)
+dtest23 <- xgb.DMatrix(data = testmatrix23,label = lable2_2)
+
+params <- list(booster = "gbtree", objective = "binary:logistic", eta=0.3, gamma=0, max_depth=6, min_child_weight=1, subsample=1, colsample_bytree=1)
+xgbcv3 <- xgb.cv( params = params, data = dtrain23, nrounds = 100, nfold = 5, showsd = T, stratified = T, print.every.n = 10, early.stop.round = 20, maximize = F)
+xgbfit23 <- xgb.train(params = params, data = dtrain23, nrounds =4, watchlist = list(val=dtest23,train=dtrain23), print.every.n = 10, early.stop.round = 10, maximize = F , eval_metric = "error")
+xgbfitpreds23 <- predict(xgbfit23,testmatrix23)
+
+
+roc.multi <- multiclass.roc(test1$target,xgbfitpreds23)
+auc(roc.multi)
+
+```
+
+Using XGBoost package (without any preprocessing):
+```{r,warning=FALSE}
+datamatrix2 <- data.matrix(training[,3:50])
+lable2_1 <- as.matrix(training$target)
+dtrain2 <- xgb.DMatrix(data = datamatrix2,label = lable2_1) 
+
+testmatrix2 <-data.matrix(testing[,3:50])
+lable2_2 <- as.matrix(testing$target)
+dtest2 <- xgb.DMatrix(data = testmatrix2,label = lable2_2)
+
+params <- list(booster = "gbtree", objective = "binary:logistic", eta=0.3, gamma=0, max_depth=6, min_child_weight=1, subsample=1, colsample_bytree=1)
+xgbcv <- xgb.cv( params = params, data = dtrain2, nrounds = 100, nfold = 5, showsd = T, stratified = T, print.every.n = 10, early.stop.round = 20, maximize = F)
+xgbfit2 <- xgb.train(params = params, data = dtrain2, nrounds =4, watchlist = list(val=dtest2,train=dtrain2), print.every.n = 10, early.stop.round = 10, maximize = F , eval_metric = "error")
+
+xgbfitpreds2 <- predict(xgbfit2,testmatrix2)
+gradiantboosting2_1 <- data.frame(test$id,xgbfitpreds2)
+write.csv(gradiantboosting2_1,"gradiantboosting2_1.csv")
+
+data.frame(preds = xgbfitpreds2) %>%
+  ggplot(aes(x = xgbfitpreds2)) + 
+  geom_histogram(bins = 50, fill = 'grey50') +
+  labs(title = 'Histogram of Predictions') +
+  theme_bw()
+range(xgbfitpreds2)
+```
+Our score from this solution on Kaggle website was 0.23443 and our rank was 4333/5169 (min=-0.25, max=0.29698)
+
+
+Finally we applied parameter tuning on XGBoost package (with  preprocessing). First we show the validation results with area under the curve equal to 0.5954. This shows that XGBoost package can take care of data prepration fairly good.
+
+```{r,warning=FALSE}
+datamatrix34 <- data.matrix(train1[,3:50])
+lable3_1 <- as.matrix(train1$target)
+dtrain34 <- xgb.DMatrix(data = datamatrix34,label = lable3_1) 
+
+testmatrix34 <-data.matrix(test1[,3:50])
+lable3_2 <- as.matrix(test1$target)
+dtest34 <- xgb.DMatrix(data = testmatrix34,label = lable3_2)
+
+params <- list(booster = "gbtree", objective = "binary:logistic", eta=0.3, gamma=0, max_depth=6, min_child_weight=1, subsample=1, colsample_bytree=1)
+xgbcv <- xgb.cv( params = params, data = dtrain34, nrounds = 100, nfold = 5, showsd = T, stratified = T, print.every.n = 10, early.stop.round = 20, maximize = F)
+xgbfit34 <- xgb.train(params = params, data = dtrain34, nrounds =6, watchlist = list(val=dtest34,train=dtrain34), print.every.n = 10, early.stop.round = 10, maximize = F , eval_metric = "error")
+
+xgbfitpreds34 <- predict(xgbfit34,testmatrix34)
+
+
+roc.multi <- multiclass.roc(test1$target,xgbfitpreds34)
+auc(roc.multi)
+```
+
+
+Applying XGBoost package (with  preprocessing)
+```{r,warning=FALSE}
+datamatrix3 <- data.matrix(train[,3:50])
+lable3_1 <- as.matrix(train$target)
+dtrain3 <- xgb.DMatrix(data = datamatrix3,label = lable3_1) 
+
+testmatrix3 <-data.matrix(test[,3:50])
+lable3_2 <- as.matrix(testing$target)
+dtest3 <- xgb.DMatrix(data = testmatrix3,label = lable3_2)
+
+params <- list(booster = "gbtree", objective = "binary:logistic", eta=0.3, gamma=0, max_depth=6, min_child_weight=1, subsample=1, colsample_bytree=1)
+xgbcv <- xgb.cv( params = params, data = dtrain3, nrounds = 100, nfold = 5, showsd = T, stratified = T, print.every.n = 10, early.stop.round = 20, maximize = F)
+xgbfit3 <- xgb.train(params = params, data = dtrain3, nrounds =6, watchlist = list(val=dtest3,train=dtrain3), print.every.n = 10, early.stop.round = 10, maximize = F , eval_metric = "error")
+
+xgbfitpreds3 <- predict(xgbfit3,testmatrix3)
+gradiantboosting3_1 <- data.frame(test$id,xgbfitpreds3)
+write.csv(gradiantboosting3_1,"gradiantboosting3_1.csv")
+
+data.frame(preds = xgbfitpreds3) %>%
+  ggplot(aes(x = xgbfitpreds3)) + 
+  geom_histogram(bins = 50, fill = 'grey50') +
+  labs(title = 'Histogram of Predictions') +
+  theme_bw()
+range(xgbfitpreds3)
+```
+Our score from this solution on Kaggle website was 0.23456 and our rank was 4323/5169 (min=-0.25, max=0.29698)
+
+From our results, we got the best rank using simple Logistic Regression and next Gradient Boosting with tuned parameters and preprocessing done by ourselfs while XGBOOST also showed a good performance in that.
+
+
