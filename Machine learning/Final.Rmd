@@ -1,6 +1,6 @@
 ---
 title: "EE711 Project"
-author: "Amirsaman Hamzeh and Roya Ghorashi"
+author: "Roya Ghorashi and Amirsaman Hamzeh"
 date: "December 26, 2017"
 output: html_document
 ---
